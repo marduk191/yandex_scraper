@@ -165,19 +165,6 @@ class YandexImageScraper:
         scroll_attempts = 0
         max_scroll_attempts = 15
 
-        # Multiple selectors to try
-        selectors = [
-            'img.serp-item__thumb',
-            'img.SimpleImage',
-            'img.ContentImage-Image',
-            'img.MMImage-Origin',
-            'img[class*="thumb"]',
-            'img[class*="image"]',
-            '.serp-item img',
-            '.gallery img',
-            'div.serp-item a img',
-        ]
-
         while len(image_urls) < num_images and scroll_attempts < max_scroll_attempts:
             if self.debug:
                 print(f"[DEBUG] Scroll attempt {scroll_attempts + 1}, found {len(image_urls)} images so far")
@@ -188,8 +175,44 @@ class YandexImageScraper:
 
             time.sleep(1)  # Give page time to load
 
-            # Find all image elements with different selectors
-            for selector in selectors:
+            # NEW APPROACH: Get ALL img tags and ALL links, then filter
+            if scroll_attempts == 1 and self.debug:
+                # Count all images on page for debugging
+                all_imgs = self.driver.find_elements(By.TAG_NAME, 'img')
+                all_links = self.driver.find_elements(By.TAG_NAME, 'a')
+                print(f"[DEBUG] Total <img> tags on page: {len(all_imgs)}")
+                print(f"[DEBUG] Total <a> tags on page: {len(all_links)}")
+
+            # Method 1: Extract from link hrefs (Yandex often stores URLs in links)
+            try:
+                links = self.driver.find_elements(By.CSS_SELECTOR, 'a[href*="img_url="]')
+                if self.debug and scroll_attempts == 1:
+                    print(f"[DEBUG] Found {len(links)} links with img_url parameter")
+
+                for idx, link in enumerate(links):
+                    try:
+                        href = link.get_attribute('href')
+                        if href and 'img_url=' in href:
+                            parsed = urllib.parse.urlparse(href)
+                            params = urllib.parse.parse_qs(parsed.query)
+                            if 'img_url' in params:
+                                img_url = params['img_url'][0]
+                                if img_url.startswith('http') and len(img_url) > 30:
+                                    image_urls.add(img_url)
+                                    if self.debug and len(image_urls) <= 5:
+                                        print(f"[DEBUG] Extracted from link href: {img_url[:100]}")
+
+                        if len(image_urls) >= num_images:
+                            break
+                    except Exception as e:
+                        if self.debug:
+                            print(f"[DEBUG] Error parsing link: {e}")
+            except Exception as e:
+                if self.debug:
+                    print(f"[DEBUG] Error finding links: {e}")
+
+            # Method 2: Try broad img selector, filter out unwanted ones
+            for selector in ['img', 'a img', 'div[class*="serp"] img', 'div[class*="item"] img']:
                 try:
                     images = self.driver.find_elements(By.CSS_SELECTOR, selector)
 
@@ -198,25 +221,28 @@ class YandexImageScraper:
 
                     for idx, img in enumerate(images):
                         try:
-                            # Debug: Print all attributes for first few elements
-                            if self.debug and idx < 2 and scroll_attempts == 1:
-                                print(f"[DEBUG] Examining element {idx}:")
-                                print(f"[DEBUG]   Tag: {img.tag_name}")
-                                print(f"[DEBUG]   Class: {img.get_attribute('class')}")
+                            # Skip the reverse image search button
+                            img_class = img.get_attribute('class') or ''
+                            if 'cbir-intent__thumb' in img_class:
+                                if self.debug and scroll_attempts == 1 and idx < 5:
+                                    print(f"[DEBUG] Skipping cbir-intent button")
+                                continue
+
+                            # Debug: Print all attributes for first few REAL elements
+                            if self.debug and len(image_urls) < 3 and scroll_attempts == 1:
+                                print(f"[DEBUG] Examining element {idx} (class: {img_class[:50]}):")
 
                                 # Get all possible attributes
                                 attrs_to_check = ['src', 'data-src', 'data-bem', 'data-image',
-                                                 'data-url', 'srcset', 'data-lazy-src', 'href']
+                                                 'data-url', 'srcset', 'data-lazy-src']
                                 for attr in attrs_to_check:
                                     val = img.get_attribute(attr)
                                     if val:
                                         print(f"[DEBUG]   {attr}: {val[:150]}")
 
-                                # Check parent element
+                                # Check parent element href
                                 try:
                                     parent = img.find_element(By.XPATH, '..')
-                                    print(f"[DEBUG]   Parent tag: {parent.tag_name}")
-                                    print(f"[DEBUG]   Parent class: {parent.get_attribute('class')}")
                                     parent_href = parent.get_attribute('href')
                                     if parent_href:
                                         print(f"[DEBUG]   Parent href: {parent_href[:150]}")
@@ -230,29 +256,22 @@ class YandexImageScraper:
                             for attr in ['src', 'data-src', 'data-image', 'data-url', 'data-lazy-src']:
                                 src = img.get_attribute(attr)
                                 if src and src.startswith('http'):
-                                    if self.debug and scroll_attempts == 1:
-                                        print(f"[DEBUG] Found URL in '{attr}': {src[:100]}")
                                     break
 
                             # Try srcset
                             if not src:
                                 srcset = img.get_attribute('srcset')
                                 if srcset:
-                                    # srcset can have multiple URLs, take the first one
                                     urls = [u.strip().split()[0] for u in srcset.split(',')]
                                     if urls and urls[0].startswith('http'):
                                         src = urls[0]
-                                        if self.debug and scroll_attempts == 1:
-                                            print(f"[DEBUG] Found URL in srcset: {src[:100]}")
 
                             # Try data-bem (JSON attribute)
                             if not src:
                                 data_bem = img.get_attribute('data-bem')
                                 if data_bem:
                                     try:
-                                        import json
                                         bem_data = json.loads(data_bem)
-                                        # Look for URL in the JSON structure
                                         if isinstance(bem_data, dict):
                                             for key in ['url', 'img_url', 'origin_url', 'preview_url']:
                                                 if key in bem_data:
@@ -268,44 +287,20 @@ class YandexImageScraper:
                                     parent = img.find_element(By.XPATH, '..')
                                     href = parent.get_attribute('href')
                                     if href and 'img_url=' in href:
-                                        # Extract img_url parameter from href
-                                        import urllib.parse
                                         parsed = urllib.parse.urlparse(href)
                                         params = urllib.parse.parse_qs(parsed.query)
                                         if 'img_url' in params:
                                             src = params['img_url'][0]
-                                            if self.debug and scroll_attempts == 1:
-                                                print(f"[DEBUG] Found URL in parent href: {src[:100]}")
-                                except:
-                                    pass
-
-                            # Try background image from parent
-                            if not src:
-                                try:
-                                    parent = img.find_element(By.XPATH, '..')
-                                    style = parent.get_attribute('style')
-                                    if style and 'url(' in style:
-                                        match = re.search(r'url\(["\']?([^"\']+)["\']?\)', style)
-                                        if match:
-                                            src = match.group(1)
                                 except:
                                     pass
 
                             # Validate and add URL
-                            if src and src.startswith('http'):
-                                # More lenient filtering - just avoid obvious non-images
-                                if 'avatar' not in src.lower() and 'logo' not in src.lower():
-                                    # Relaxed length check - allow shorter URLs
-                                    if len(src) > 30:
-                                        image_urls.add(src)
-                                        if self.debug and len(image_urls) <= 5:
-                                            print(f"[DEBUG] Added image URL: {src[:100]}")
-                                    elif self.debug:
-                                        print(f"[DEBUG] Rejected (too short): {src}")
-                                elif self.debug and scroll_attempts == 1:
-                                    print(f"[DEBUG] Rejected (avatar/logo): {src[:100]}")
-                            elif self.debug and scroll_attempts == 1 and idx < 2:
-                                print(f"[DEBUG] No valid URL found for this element")
+                            if src and src.startswith('http') and len(src) > 30:
+                                # Filter out unwanted URLs
+                                if not any(x in src.lower() for x in ['avatar', 'logo', 'icon', 'button']):
+                                    image_urls.add(src)
+                                    if self.debug and len(image_urls) <= 5:
+                                        print(f"[DEBUG] Added image URL {len(image_urls)}: {src[:100]}")
 
                             if len(image_urls) >= num_images:
                                 break
