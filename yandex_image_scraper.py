@@ -479,17 +479,25 @@ class YandexImageScraper:
         camera_selectors = [
             'button.CBIr',
             'button[class*="cbir"]',
+            'button[class*="Cbir"]',
+            'button[class*="CBIR"]',
             '.search-by-image__button',
             'button[aria-label*="image"]',
             'button[aria-label*="Search"]',
             '[class*="camera"]',
             'div.cbir-panel__button',
-            'div[class*="CbirButton"]'
+            'div[class*="CbirButton"]',
+            '.SerpHeaderActions button',
+            '.HeaderActions button',
+            'button[type="button"]',
+            'div[role="button"]',
+            'span[role="button"]'
         ]
 
         if self.debug:
             print("[DEBUG] Looking for camera/upload button...")
 
+        # Method 1: Try CSS selectors
         for selector in camera_selectors:
             try:
                 if self.debug:
@@ -499,36 +507,109 @@ class YandexImageScraper:
                 if buttons:
                     if self.debug:
                         print(f"[DEBUG] Found {len(buttons)} elements with selector: {selector}")
-                    camera_button = buttons[0]
-                    break
+                    # Filter buttons that might be the camera button
+                    for btn in buttons:
+                        try:
+                            btn_class = btn.get_attribute('class') or ''
+                            btn_aria = btn.get_attribute('aria-label') or ''
+                            btn_title = btn.get_attribute('title') or ''
+
+                            if any(x in btn_class.lower() for x in ['cbir', 'camera', 'upload', 'image']) or \
+                               any(x in btn_aria.lower() for x in ['image', 'camera', 'upload', 'search']) or \
+                               any(x in btn_title.lower() for x in ['image', 'camera', 'upload']):
+                                camera_button = btn
+                                if self.debug:
+                                    print(f"[DEBUG] Selected button with class='{btn_class[:50]}', aria-label='{btn_aria[:50]}'")
+                                break
+                        except:
+                            continue
+
+                    if camera_button:
+                        break
             except Exception as e:
                 if self.debug:
                     print(f"[DEBUG] Selector failed: {e}")
                 continue
 
+        # Method 2: Try to find by XPath looking for text/SVG icons
+        if not camera_button and self.debug:
+            print("[DEBUG] Trying XPath methods...")
+            try:
+                # Look for buttons/links that might contain camera icon or "search by image" text
+                xpath_selectors = [
+                    "//button[contains(@class, 'cbir') or contains(@class, 'Cbir')]",
+                    "//button[contains(@aria-label, 'image')]",
+                    "//div[@role='button' and contains(@class, 'cbir')]",
+                    "//*[contains(text(), 'Search by image')]",
+                    "//*[contains(text(), 'image search')]",
+                    "//button[.//svg]"  # Buttons with SVG icons
+                ]
+
+                for xpath in xpath_selectors:
+                    try:
+                        elements = self.driver.find_elements(By.XPATH, xpath)
+                        if elements:
+                            if self.debug:
+                                print(f"[DEBUG] XPath found {len(elements)} elements: {xpath[:50]}")
+                            camera_button = elements[0]
+                            break
+                    except:
+                        continue
+            except Exception as e:
+                if self.debug:
+                    print(f"[DEBUG] XPath search failed: {e}")
+
+        # Method 3: Try finding file input directly (it might exist without clicking button)
         if not camera_button:
-            print("Error: Could not find camera/upload button")
-            print("Try running with --debug --no-headless to see the page")
             if self.debug:
+                print("[DEBUG] Camera button not found, looking for file input directly...")
+
+            file_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
+            if file_inputs:
+                if self.debug:
+                    print(f"[DEBUG] Found {len(file_inputs)} file inputs already present")
+                # Skip the camera button click and go directly to file upload
+                camera_button = "skip"  # Special marker
+
+        if not camera_button:
+            print("Error: Could not find camera/upload button or file input")
+            print("The page structure may have changed. Try running with --no-headless to see the page")
+            if self.debug:
+                # Save debug info
                 self._debug_save_screenshot("camera_button_not_found")
                 self._debug_print_page_info()
+
+                # Try to list all buttons on the page
+                try:
+                    all_buttons = self.driver.find_elements(By.TAG_NAME, 'button')
+                    print(f"[DEBUG] Total buttons on page: {len(all_buttons)}")
+                    if all_buttons:
+                        print("[DEBUG] First 5 buttons:")
+                        for i, btn in enumerate(all_buttons[:5]):
+                            print(f"[DEBUG]   Button {i}: class='{btn.get_attribute('class')}', aria-label='{btn.get_attribute('aria-label')}'")
+                except:
+                    pass
             return 0
 
-        # Click the camera button
-        try:
-            if self.debug:
-                print("[DEBUG] Clicking camera button...")
-            camera_button.click()
-            time.sleep(2)
+        # Click the camera button (unless we're skipping it)
+        if camera_button != "skip":
+            try:
+                if self.debug:
+                    print("[DEBUG] Clicking camera button...")
+                camera_button.click()
+                time.sleep(2)
 
-            if self.debug:
-                self._debug_save_screenshot("after_camera_click")
+                if self.debug:
+                    self._debug_save_screenshot("after_camera_click")
 
-        except Exception as e:
-            print(f"Error clicking camera button: {e}")
+            except Exception as e:
+                print(f"Error clicking camera button: {e}")
+                if self.debug:
+                    self._debug_save_screenshot("camera_click_error")
+                return 0
+        else:
             if self.debug:
-                self._debug_save_screenshot("camera_click_error")
-            return 0
+                print("[DEBUG] Skipping camera button click (file input already available)")
 
         # Find the file input
         file_input = None
