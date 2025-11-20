@@ -9,6 +9,8 @@ import sys
 import time
 import argparse
 import requests
+import json
+import urllib.parse
 from pathlib import Path
 from urllib.parse import urlencode, quote
 from selenium import webdriver
@@ -194,31 +196,116 @@ class YandexImageScraper:
                     if self.debug and images:
                         print(f"[DEBUG] Selector '{selector}' found {len(images)} elements")
 
-                    for img in images:
+                    for idx, img in enumerate(images):
                         try:
-                            # Try different attributes
-                            src = img.get_attribute('src')
-                            if not src:
-                                src = img.get_attribute('data-src')
-                            if not src:
-                                src = img.get_attribute('data-bem')
+                            # Debug: Print all attributes for first few elements
+                            if self.debug and idx < 2 and scroll_attempts == 1:
+                                print(f"[DEBUG] Examining element {idx}:")
+                                print(f"[DEBUG]   Tag: {img.tag_name}")
+                                print(f"[DEBUG]   Class: {img.get_attribute('class')}")
 
-                            # Also try getting the background image from parent
-                            if not src:
-                                parent = img.find_element(By.XPATH, '..')
-                                style = parent.get_attribute('style')
-                                if style and 'url(' in style:
-                                    import re
-                                    match = re.search(r'url\(["\']?([^"\']+)["\']?\)', style)
-                                    if match:
-                                        src = match.group(1)
+                                # Get all possible attributes
+                                attrs_to_check = ['src', 'data-src', 'data-bem', 'data-image',
+                                                 'data-url', 'srcset', 'data-lazy-src', 'href']
+                                for attr in attrs_to_check:
+                                    val = img.get_attribute(attr)
+                                    if val:
+                                        print(f"[DEBUG]   {attr}: {val[:150]}")
 
-                            if src and src.startswith('http') and 'avatar' not in src.lower() and len(src) > 50:
-                                # Filter out very small images (likely thumbnails/icons)
-                                if 'x-x' not in src and 'logo' not in src.lower():
-                                    image_urls.add(src)
-                                    if self.debug and len(image_urls) <= 3:
-                                        print(f"[DEBUG] Added image URL: {src[:100]}")
+                                # Check parent element
+                                try:
+                                    parent = img.find_element(By.XPATH, '..')
+                                    print(f"[DEBUG]   Parent tag: {parent.tag_name}")
+                                    print(f"[DEBUG]   Parent class: {parent.get_attribute('class')}")
+                                    parent_href = parent.get_attribute('href')
+                                    if parent_href:
+                                        print(f"[DEBUG]   Parent href: {parent_href[:150]}")
+                                except:
+                                    pass
+
+                            # Try different attributes for the image URL
+                            src = None
+
+                            # Try standard attributes
+                            for attr in ['src', 'data-src', 'data-image', 'data-url', 'data-lazy-src']:
+                                src = img.get_attribute(attr)
+                                if src and src.startswith('http'):
+                                    if self.debug and scroll_attempts == 1:
+                                        print(f"[DEBUG] Found URL in '{attr}': {src[:100]}")
+                                    break
+
+                            # Try srcset
+                            if not src:
+                                srcset = img.get_attribute('srcset')
+                                if srcset:
+                                    # srcset can have multiple URLs, take the first one
+                                    urls = [u.strip().split()[0] for u in srcset.split(',')]
+                                    if urls and urls[0].startswith('http'):
+                                        src = urls[0]
+                                        if self.debug and scroll_attempts == 1:
+                                            print(f"[DEBUG] Found URL in srcset: {src[:100]}")
+
+                            # Try data-bem (JSON attribute)
+                            if not src:
+                                data_bem = img.get_attribute('data-bem')
+                                if data_bem:
+                                    try:
+                                        import json
+                                        bem_data = json.loads(data_bem)
+                                        # Look for URL in the JSON structure
+                                        if isinstance(bem_data, dict):
+                                            for key in ['url', 'img_url', 'origin_url', 'preview_url']:
+                                                if key in bem_data:
+                                                    src = bem_data[key]
+                                                    if src:
+                                                        break
+                                    except:
+                                        pass
+
+                            # Try parent element href
+                            if not src:
+                                try:
+                                    parent = img.find_element(By.XPATH, '..')
+                                    href = parent.get_attribute('href')
+                                    if href and 'img_url=' in href:
+                                        # Extract img_url parameter from href
+                                        import urllib.parse
+                                        parsed = urllib.parse.urlparse(href)
+                                        params = urllib.parse.parse_qs(parsed.query)
+                                        if 'img_url' in params:
+                                            src = params['img_url'][0]
+                                            if self.debug and scroll_attempts == 1:
+                                                print(f"[DEBUG] Found URL in parent href: {src[:100]}")
+                                except:
+                                    pass
+
+                            # Try background image from parent
+                            if not src:
+                                try:
+                                    parent = img.find_element(By.XPATH, '..')
+                                    style = parent.get_attribute('style')
+                                    if style and 'url(' in style:
+                                        match = re.search(r'url\(["\']?([^"\']+)["\']?\)', style)
+                                        if match:
+                                            src = match.group(1)
+                                except:
+                                    pass
+
+                            # Validate and add URL
+                            if src and src.startswith('http'):
+                                # More lenient filtering - just avoid obvious non-images
+                                if 'avatar' not in src.lower() and 'logo' not in src.lower():
+                                    # Relaxed length check - allow shorter URLs
+                                    if len(src) > 30:
+                                        image_urls.add(src)
+                                        if self.debug and len(image_urls) <= 5:
+                                            print(f"[DEBUG] Added image URL: {src[:100]}")
+                                    elif self.debug:
+                                        print(f"[DEBUG] Rejected (too short): {src}")
+                                elif self.debug and scroll_attempts == 1:
+                                    print(f"[DEBUG] Rejected (avatar/logo): {src[:100]}")
+                            elif self.debug and scroll_attempts == 1 and idx < 2:
+                                print(f"[DEBUG] No valid URL found for this element")
 
                             if len(image_urls) >= num_images:
                                 break
