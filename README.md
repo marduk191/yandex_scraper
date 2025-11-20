@@ -88,6 +88,7 @@ Options:
   -o, --output FOLDER        Output folder name (default: search term)
   --no-headless              Show browser window (default: headless mode)
   --debug                    Enable debug mode (saves screenshots and page source)
+  --no-filter                Disable SafeSearch/content filtering (unfiltered results)
   -h, --help                 Show help message
 ```
 
@@ -105,6 +106,9 @@ python yandex_image_scraper.py -s "abstract art" -n 30 -o art_collection
 
 # Debug mode - see what's happening and save screenshots
 python yandex_image_scraper.py -s "cats" -n 10 --debug --no-headless
+
+# Get unfiltered results (disable SafeSearch)
+python yandex_image_scraper.py -s "search term" -n 50 --no-filter
 ```
 
 ## Output

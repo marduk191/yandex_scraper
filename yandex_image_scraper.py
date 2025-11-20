@@ -26,16 +26,18 @@ import re
 class YandexImageScraper:
     """Scraper for downloading images from Yandex Images"""
 
-    def __init__(self, headless=True, debug=False):
+    def __init__(self, headless=True, debug=False, disable_filters=False):
         """
         Initialize the scraper
 
         Args:
             headless (bool): Run browser in headless mode
             debug (bool): Enable debug mode (saves screenshots, prints HTML)
+            disable_filters (bool): Disable SafeSearch/content filtering
         """
         self.headless = headless
         self.debug = debug
+        self.disable_filters = disable_filters
         self.driver = None
 
     def _init_driver(self):
@@ -361,6 +363,12 @@ class YandexImageScraper:
         # Build Yandex Images search URL
         search_url = f"https://yandex.com/images/search?text={quote(search_term)}"
 
+        # Disable SafeSearch/filtering if requested
+        if self.disable_filters:
+            search_url += "&family=no"
+            if self.debug:
+                print("[DEBUG] SafeSearch disabled (family=no)")
+
         print(f"Searching Yandex Images for: {search_term}")
         print(f"URL: {search_url}")
         self.driver.get(search_url)
@@ -468,7 +476,15 @@ class YandexImageScraper:
         # Go to Yandex Images
         if self.debug:
             print("[DEBUG] Loading Yandex Images homepage")
-        self.driver.get("https://yandex.com/images/")
+
+        # Build URL with optional filter disabling
+        homepage_url = "https://yandex.com/images/"
+        if self.disable_filters:
+            homepage_url += "?family=no"
+            if self.debug:
+                print("[DEBUG] SafeSearch disabled (family=no)")
+
+        self.driver.get(homepage_url)
         time.sleep(2)
 
         if self.debug:
@@ -749,6 +765,9 @@ Examples:
 
   # Custom folder name
   python yandex_image_scraper.py -s "sunset" -n 30 -o beautiful_sunsets
+
+  # Disable SafeSearch to get unfiltered results
+  python yandex_image_scraper.py -s "search term" -n 50 --no-filter
         """
     )
 
@@ -766,11 +785,13 @@ Examples:
                        help='Show browser window (default: headless mode)')
     parser.add_argument('--debug', action='store_true',
                        help='Enable debug mode (saves screenshots and page source)')
+    parser.add_argument('--no-filter', action='store_true',
+                       help='Disable SafeSearch/content filtering (unfiltered results)')
 
     args = parser.parse_args()
 
     # Create scraper
-    scraper = YandexImageScraper(headless=not args.no_headless, debug=args.debug)
+    scraper = YandexImageScraper(headless=not args.no_headless, debug=args.debug, disable_filters=args.no_filter)
 
     try:
         if args.search:
