@@ -466,29 +466,153 @@ class YandexImageScraper:
         print(f"Performing reverse image search for: {image_path}")
 
         # Go to Yandex Images
+        if self.debug:
+            print("[DEBUG] Loading Yandex Images homepage")
         self.driver.get("https://yandex.com/images/")
+        time.sleep(2)
 
-        # Wait and click on camera icon for reverse search
+        if self.debug:
+            self._debug_save_screenshot("reverse_homepage")
+
+        # Try to find and click the camera/upload button
+        camera_button = None
+        camera_selectors = [
+            'button.CBIr',
+            'button[class*="cbir"]',
+            '.search-by-image__button',
+            'button[aria-label*="image"]',
+            'button[aria-label*="Search"]',
+            '[class*="camera"]',
+            'div.cbir-panel__button',
+            'div[class*="CbirButton"]'
+        ]
+
+        if self.debug:
+            print("[DEBUG] Looking for camera/upload button...")
+
+        for selector in camera_selectors:
+            try:
+                if self.debug:
+                    print(f"[DEBUG] Trying selector: {selector}")
+
+                buttons = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                if buttons:
+                    if self.debug:
+                        print(f"[DEBUG] Found {len(buttons)} elements with selector: {selector}")
+                    camera_button = buttons[0]
+                    break
+            except Exception as e:
+                if self.debug:
+                    print(f"[DEBUG] Selector failed: {e}")
+                continue
+
+        if not camera_button:
+            print("Error: Could not find camera/upload button")
+            print("Try running with --debug --no-headless to see the page")
+            if self.debug:
+                self._debug_save_screenshot("camera_button_not_found")
+                self._debug_print_page_info()
+            return 0
+
+        # Click the camera button
         try:
-            # Wait for the search by image button
-            camera_button = WebDriverWait(self.driver, 10).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, '.CBIr3, .search-by-image__button, [aria-label*="Search by image"]'))
-            )
+            if self.debug:
+                print("[DEBUG] Clicking camera button...")
             camera_button.click()
-            time.sleep(1)
+            time.sleep(2)
 
-            # Find and click file upload option
-            file_input = self.driver.find_element(By.CSS_SELECTOR, 'input[type="file"]')
-            file_input.send_keys(str(image_path.absolute()))
-
-            # Wait for results to load
-            time.sleep(3)
-            WebDriverWait(self.driver, 15).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, '.serp-item, .SimpleImage'))
-            )
+            if self.debug:
+                self._debug_save_screenshot("after_camera_click")
 
         except Exception as e:
-            print(f"Error performing reverse image search: {e}")
+            print(f"Error clicking camera button: {e}")
+            if self.debug:
+                self._debug_save_screenshot("camera_click_error")
+            return 0
+
+        # Find the file input
+        file_input = None
+        file_input_selectors = [
+            'input[type="file"]',
+            'input[name="upfile"]',
+            'input[class*="file"]'
+        ]
+
+        if self.debug:
+            print("[DEBUG] Looking for file input...")
+
+        for selector in file_input_selectors:
+            try:
+                inputs = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                if inputs:
+                    if self.debug:
+                        print(f"[DEBUG] Found {len(inputs)} file inputs with selector: {selector}")
+                    file_input = inputs[0]
+                    break
+            except Exception as e:
+                if self.debug:
+                    print(f"[DEBUG] File input selector failed: {e}")
+                continue
+
+        if not file_input:
+            print("Error: Could not find file upload input")
+            if self.debug:
+                self._debug_save_screenshot("file_input_not_found")
+                self._debug_print_page_info()
+            return 0
+
+        # Upload the file
+        try:
+            if self.debug:
+                print(f"[DEBUG] Uploading file: {image_path.absolute()}")
+            file_input.send_keys(str(image_path.absolute()))
+
+            if self.debug:
+                print("[DEBUG] File uploaded, waiting for results...")
+            time.sleep(3)
+
+            if self.debug:
+                self._debug_save_screenshot("after_upload")
+
+        except Exception as e:
+            print(f"Error uploading file: {e}")
+            if self.debug:
+                self._debug_save_screenshot("upload_error")
+                self._debug_print_page_info()
+            return 0
+
+        # Wait for results to load
+        page_loaded = False
+        selectors_to_wait = [
+            '.serp-item',
+            'img[class*="serp"]',
+            'img[class*="thumb"]',
+            'a[href*="img_url="]',
+            'div[class*="serp"]'
+        ]
+
+        if self.debug:
+            print("[DEBUG] Waiting for search results...")
+
+        for selector in selectors_to_wait:
+            try:
+                if self.debug:
+                    print(f"[DEBUG] Waiting for selector: {selector}")
+                WebDriverWait(self.driver, 5).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                )
+                if self.debug:
+                    print(f"[DEBUG] Found selector: {selector}")
+                page_loaded = True
+                break
+            except TimeoutException:
+                continue
+
+        if not page_loaded:
+            print("Timeout waiting for reverse search results")
+            if self.debug:
+                self._debug_save_screenshot("reverse_timeout")
+                self._debug_print_page_info()
             return 0
 
         # Extract image URLs
