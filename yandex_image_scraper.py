@@ -24,14 +24,16 @@ import re
 class YandexImageScraper:
     """Scraper for downloading images from Yandex Images"""
 
-    def __init__(self, headless=True):
+    def __init__(self, headless=True, debug=False):
         """
         Initialize the scraper
 
         Args:
             headless (bool): Run browser in headless mode
+            debug (bool): Enable debug mode (saves screenshots, prints HTML)
         """
         self.headless = headless
+        self.debug = debug
         self.driver = None
 
     def _init_driver(self):
@@ -41,18 +43,53 @@ class YandexImageScraper:
 
         chrome_options = Options()
         if self.headless:
-            chrome_options.add_argument('--headless')
+            chrome_options.add_argument('--headless=new')
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        chrome_options.add_argument('--disable-gpu')
+        chrome_options.add_argument('--window-size=1920,1080')
         chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+
+        # Additional options to avoid detection
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option('useAutomationExtension', False)
 
         try:
             self.driver = webdriver.Chrome(options=chrome_options)
+            self.driver.execute_cdp_cmd('Network.setUserAgentOverride', {
+                "userAgent": 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            })
+            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         except Exception as e:
             print(f"Error initializing Chrome driver: {e}")
             print("Make sure chromedriver is installed and in PATH")
             sys.exit(1)
+
+    def _debug_save_screenshot(self, name="debug"):
+        """Save a screenshot for debugging"""
+        if self.debug and self.driver:
+            try:
+                filename = f"{name}_{int(time.time())}.png"
+                self.driver.save_screenshot(filename)
+                print(f"[DEBUG] Screenshot saved: {filename}")
+            except Exception as e:
+                print(f"[DEBUG] Failed to save screenshot: {e}")
+
+    def _debug_print_page_info(self):
+        """Print page information for debugging"""
+        if self.debug and self.driver:
+            try:
+                print(f"[DEBUG] Current URL: {self.driver.current_url}")
+                print(f"[DEBUG] Page title: {self.driver.title}")
+
+                # Save page source
+                filename = f"page_source_{int(time.time())}.html"
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(self.driver.page_source)
+                print(f"[DEBUG] Page source saved: {filename}")
+            except Exception as e:
+                print(f"[DEBUG] Failed to print page info: {e}")
 
     def _create_folder(self, folder_name):
         """
@@ -124,52 +161,99 @@ class YandexImageScraper:
         """
         image_urls = set()
         scroll_attempts = 0
-        max_scroll_attempts = 10
+        max_scroll_attempts = 15
+
+        # Multiple selectors to try
+        selectors = [
+            'img.serp-item__thumb',
+            'img.SimpleImage',
+            'img.ContentImage-Image',
+            'img.MMImage-Origin',
+            'img[class*="thumb"]',
+            'img[class*="image"]',
+            '.serp-item img',
+            '.gallery img',
+            'div.serp-item a img',
+        ]
 
         while len(image_urls) < num_images and scroll_attempts < max_scroll_attempts:
+            if self.debug:
+                print(f"[DEBUG] Scroll attempt {scroll_attempts + 1}, found {len(image_urls)} images so far")
+
             # Scroll to load more images
-            self._scroll_page(scroll_pause_time=1.5)
+            if scroll_attempts > 0:
+                self._scroll_page(scroll_pause_time=1.5)
 
-            # Find all image elements
-            try:
-                # Try multiple selectors for Yandex images
-                images = self.driver.find_elements(By.CSS_SELECTOR,
-                    '.serp-item__thumb, .SimpleImage, .ContentImage-Image, img.MMImage-Origin')
+            time.sleep(1)  # Give page time to load
 
-                for img in images:
-                    try:
-                        # Get the src or data-bem attribute
-                        src = img.get_attribute('src')
-                        if not src:
-                            src = img.get_attribute('data-src')
+            # Find all image elements with different selectors
+            for selector in selectors:
+                try:
+                    images = self.driver.find_elements(By.CSS_SELECTOR, selector)
 
-                        if src and src.startswith('http') and 'avatar' not in src.lower():
-                            image_urls.add(src)
+                    if self.debug and images:
+                        print(f"[DEBUG] Selector '{selector}' found {len(images)} elements")
 
-                        if len(image_urls) >= num_images:
-                            break
-                    except:
-                        continue
+                    for img in images:
+                        try:
+                            # Try different attributes
+                            src = img.get_attribute('src')
+                            if not src:
+                                src = img.get_attribute('data-src')
+                            if not src:
+                                src = img.get_attribute('data-bem')
 
-            except Exception as e:
-                print(f"Error extracting images: {e}")
+                            # Also try getting the background image from parent
+                            if not src:
+                                parent = img.find_element(By.XPATH, '..')
+                                style = parent.get_attribute('style')
+                                if style and 'url(' in style:
+                                    import re
+                                    match = re.search(r'url\(["\']?([^"\']+)["\']?\)', style)
+                                    if match:
+                                        src = match.group(1)
+
+                            if src and src.startswith('http') and 'avatar' not in src.lower() and len(src) > 50:
+                                # Filter out very small images (likely thumbnails/icons)
+                                if 'x-x' not in src and 'logo' not in src.lower():
+                                    image_urls.add(src)
+                                    if self.debug and len(image_urls) <= 3:
+                                        print(f"[DEBUG] Added image URL: {src[:100]}")
+
+                            if len(image_urls) >= num_images:
+                                break
+                        except Exception as e:
+                            if self.debug:
+                                print(f"[DEBUG] Error processing image element: {e}")
+                            continue
+
+                    if len(image_urls) >= num_images:
+                        break
+
+                except Exception as e:
+                    if self.debug:
+                        print(f"[DEBUG] Error with selector '{selector}': {e}")
 
             scroll_attempts += 1
 
-            if len(image_urls) == 0:
-                # Try clicking on first image to get larger versions
+            # If still no images found on first attempt, try clicking on an image
+            if len(image_urls) == 0 and scroll_attempts == 1:
+                if self.debug:
+                    print("[DEBUG] No images found, trying to click on first search result")
                 try:
-                    first_item = self.driver.find_element(By.CSS_SELECTOR, '.serp-item')
-                    first_item.click()
-                    time.sleep(2)
+                    clickable_items = self.driver.find_elements(By.CSS_SELECTOR,
+                        '.serp-item, .serp-item__link, a[class*="serp"]')
+                    if clickable_items:
+                        clickable_items[0].click()
+                        time.sleep(2)
+                        if self.debug:
+                            self._debug_save_screenshot("after_click")
+                except Exception as e:
+                    if self.debug:
+                        print(f"[DEBUG] Failed to click on item: {e}")
 
-                    # Now try to get the full-size image
-                    full_img = self.driver.find_element(By.CSS_SELECTOR, '.MMImage-Origin')
-                    src = full_img.get_attribute('src')
-                    if src:
-                        image_urls.add(src)
-                except:
-                    pass
+        if self.debug:
+            print(f"[DEBUG] Extraction complete. Found {len(image_urls)} total images")
 
         return list(image_urls)[:num_images]
 
@@ -196,16 +280,50 @@ class YandexImageScraper:
         search_url = f"https://yandex.com/images/search?text={quote(search_term)}"
 
         print(f"Searching Yandex Images for: {search_term}")
+        print(f"URL: {search_url}")
         self.driver.get(search_url)
 
-        # Wait for page to load
-        try:
-            WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, '.serp-item, .SimpleImage'))
-            )
-        except TimeoutException:
+        # Wait for page to load with multiple possible selectors
+        selectors_to_wait = [
+            '.serp-item',
+            '.SimpleImage',
+            'img[class*="serp"]',
+            'img[class*="thumb"]',
+            '.gallery',
+            'div[class*="serp"]'
+        ]
+
+        page_loaded = False
+        for selector in selectors_to_wait:
+            try:
+                if self.debug:
+                    print(f"[DEBUG] Waiting for selector: {selector}")
+                WebDriverWait(self.driver, 5).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                )
+                if self.debug:
+                    print(f"[DEBUG] Found selector: {selector}")
+                page_loaded = True
+                break
+            except TimeoutException:
+                continue
+
+        if not page_loaded:
             print("Timeout waiting for search results")
+            print("The page structure might have changed or Yandex is blocking automated access.")
+            print("Try running with --no-headless --debug to see what's happening.")
+
+            if self.debug:
+                self._debug_save_screenshot("timeout_error")
+                self._debug_print_page_info()
+
             return 0
+
+        # Additional wait for images to load
+        time.sleep(2)
+
+        if self.debug:
+            self._debug_save_screenshot("after_page_load")
 
         # Extract image URLs
         print(f"Extracting image URLs...")
@@ -359,11 +477,13 @@ Examples:
                        help='Output folder name (default: search term or reverse_search_<filename>)')
     parser.add_argument('--no-headless', action='store_true',
                        help='Show browser window (default: headless mode)')
+    parser.add_argument('--debug', action='store_true',
+                       help='Enable debug mode (saves screenshots and page source)')
 
     args = parser.parse_args()
 
     # Create scraper
-    scraper = YandexImageScraper(headless=not args.no_headless)
+    scraper = YandexImageScraper(headless=not args.no_headless, debug=args.debug)
 
     try:
         if args.search:
